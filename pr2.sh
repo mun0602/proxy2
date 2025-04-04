@@ -7,6 +7,7 @@
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
+BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Kiểm tra quyền root
@@ -163,19 +164,20 @@ echo -e "${YELLOW}URI Shadowsocks: ${NC}$SS_URI" >> "$CONFIG_FILE"
 # Lưu URI vào file riêng để dễ truy cập
 echo "$SS_URI" > "/root/shadowsocks_uri.txt"
 
-# Hiển thị QR code trước, sau đó hiển thị tên ở dưới giữa với font lớn hơn, đậm, màu đỏ
+# Hiển thị QR code trước, sau đó hiển thị tên ở dưới giữa với định dạng --------TÊN-------- màu xanh dương
 echo
 qrencode -t ANSIUTF8 -o - "$SS_URI"
 # Tạo dòng trống để cách khoảng
 echo
 # Lấy độ dài của terminal để căn giữa
 TERM_WIDTH=$(tput cols)
-NAME_LENGTH=${#SS_NAME}
+FORMATTED_NAME="--------${SS_NAME}--------"
+NAME_LENGTH=${#FORMATTED_NAME}
 # Tính số khoảng trắng cần thêm vào trước tên để căn giữa
 PADDING=$(( (TERM_WIDTH - NAME_LENGTH) / 2 ))
-# In tên với định dạng in đậm, màu đỏ và căn giữa
+# In tên với định dạng in đậm, màu xanh dương và căn giữa
 printf "%${PADDING}s" ""
-echo -e "${RED}\033[1m${SS_NAME}\033[0m"
+echo -e "${BLUE}\033[1m${FORMATTED_NAME}\033[0m"
 echo
 echo -e "\n${YELLOW}Quét mã QR trên với app Shadowsocks để kết nối${NC}"
 echo -e "${YELLOW}Thông tin kết nối đã được lưu vào: $CONFIG_FILE${NC}"
