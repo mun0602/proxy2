@@ -146,10 +146,19 @@ Tên: $SS_NAME
 URI: ss://$(echo -n "$SS_METHOD:$SS_PASS@$PUBLIC_IP:$SS_PORT" | base64 | tr -d '\n')#$SS_NAME
 EOF
 
-# Tạo file QR code cho cấu hình SS (cho client di động)
+# Tạo URI Shadowsocks đảm bảo đúng định dạng
+# Format: ss://BASE64(method:password@server:port)#tag
 SS_URI="ss://$(echo -n "$SS_METHOD:$SS_PASS@$PUBLIC_IP:$SS_PORT" | base64 | tr -d '\n')#$SS_NAME"
 
-echo -e "\n${GREEN}=== $SS_NAME ===${NC}"
+# Kiểm tra và hiển thị mẫu URI để xác nhận
+echo -e "${YELLOW}URI Shadowsocks: ${NC}$SS_URI" >> "$CONFIG_FILE"
+
+# Lưu URI vào file riêng để dễ truy cập
+echo "$SS_URI" > "/root/shadowsocks_uri.txt"
+
+# Hiển thị QR code trước, sau đó hiển thị tên ở dưới giữa
+echo
 qrencode -t ANSIUTF8 -o - "$SS_URI"
+echo -e "${GREEN}$SS_NAME${NC}"
 echo -e "\n${YELLOW}Quét mã QR trên với app Shadowsocks để kết nối${NC}"
 echo -e "${YELLOW}Thông tin kết nối đã được lưu vào: $CONFIG_FILE${NC}"
