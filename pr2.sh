@@ -1,13 +1,12 @@
 #!/bin/bash
 
-# Script tự động cài đặt Shadowsocks đã tối ưu
-# Phiên bản tối giản - không sử dụng PAC file, sử dụng DNS Cloudflare
+# Script tự động cài đặt Squid với PAC file
+# Phiên bản sửa lỗi - sử dụng cổng chuẩn và cấu hình tường lửa
 
 # Màu sắc cho output
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
-BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Kiểm tra quyền root
@@ -16,8 +15,9 @@ if [ "$EUID" -ne 0 ]; then
   exit 1
 fi
 
-# Hàm để tạo cổng ngẫu nhiên
+# Hàm để tạo cổng ngẫu nhiên và kiểm tra xem nó có đang được sử dụng không
 get_random_port() {
+  # Tạo cổng ngẫu nhiên trong khoảng 10000-65000
   while true; do
     RANDOM_PORT=$(shuf -i 10000-65000 -n 1)
     if ! netstat -tuln | grep -q ":$RANDOM_PORT "; then
@@ -29,155 +29,198 @@ get_random_port() {
 
 # Hàm lấy địa chỉ IP công cộng
 get_public_ip() {
+  # Sử dụng nhiều dịch vụ để đảm bảo lấy được IP
   PUBLIC_IP=$(curl -s https://api.ipify.org || curl -s https://ifconfig.me || curl -s https://icanhazip.com || curl -s https://ipinfo.io/ip)
 
   if [ -z "$PUBLIC_IP" ]; then
+    echo -e "${YELLOW}Không thể xác định địa chỉ IP công cộng. Sử dụng IP local thay thế.${NC}"
     PUBLIC_IP=$(hostname -I | awk '{print $1}')
   fi
 }
 
-# Tạo password nếu không được cung cấp
-generate_password() {
-  if [ -z "$SS_PASS" ]; then
-    SS_PASS="pass$(openssl rand -hex 6)"
-  fi
-}
+# Lấy cổng ngẫu nhiên cho Squid
+PROXY_PORT=$(get_random_port)
+echo -e "${GREEN}Đã chọn cổng ngẫu nhiên cho Squid: $PROXY_PORT${NC}"
 
-# Phân tích tham số dòng lệnh
-while getopts "p:m:n:" opt; do
-  case $opt in
-    p) SS_PASS="$OPTARG" ;;
-    m) SS_METHOD="$OPTARG" ;;
-    n) SS_NAME="$OPTARG" ;;
-    \?) echo "Tùy chọn không hợp lệ: -$OPTARG" >&2; exit 1 ;;
-  esac
-done
-
-# Nếu không có tên được cung cấp, hỏi người dùng
-if [ -z "$SS_NAME" ]; then
-  echo -e "${YELLOW}Nhập tên cho QR code Shadowsocks [mặc định: SS-Server]:${NC} "
-  read -r user_name
-  if [ -z "$user_name" ]; then
-    SS_NAME="SS-Server"
-  else
-    SS_NAME="$user_name"
-  fi
-fi
-
-# Lấy cổng ngẫu nhiên cho Shadowsocks
-SS_PORT=$(get_random_port)
-
-# Phương thức mã hóa mặc định
-if [ -z "$SS_METHOD" ]; then
-  SS_METHOD="aes-256-gcm"
-fi
-
-# Tạo mật khẩu
-generate_password
+# Sử dụng cổng 80 cho web server (cổng HTTP tiêu chuẩn)
+HTTP_PORT=80
+echo -e "${GREEN}Sử dụng cổng HTTP tiêu chuẩn: $HTTP_PORT${NC}"
 
 # Cài đặt các gói cần thiết
+echo -e "${GREEN}Đang cài đặt các gói cần thiết...${NC}"
 apt update -y
-apt install -y python3-pip curl ufw qrencode
+apt install -y squid nginx curl ufw netcat
 
-# Cài đặt Shadowsocks
-pip3 install https://github.com/shadowsocks/shadowsocks/archive/master.zip
+# Dừng các dịch vụ để cấu hình
+systemctl stop nginx 2>/dev/null
+systemctl stop squid 2>/dev/null
+systemctl stop squid3 2>/dev/null
 
-# Tạo thư mục cấu hình Shadowsocks
-mkdir -p /etc/shadowsocks
+# Xác định thư mục cấu hình Squid
+if [ -d /etc/squid ]; then
+  SQUID_CONFIG_DIR="/etc/squid"
+else
+  SQUID_CONFIG_DIR="/etc/squid3"
+  # Nếu cả hai đều không tồn tại, kiểm tra lại
+  if [ ! -d "$SQUID_CONFIG_DIR" ]; then
+    SQUID_CONFIG_DIR="/etc/squid"
+  fi
+fi
+
+# Sao lưu cấu hình Squid gốc nếu tồn tại
+if [ -f "$SQUID_CONFIG_DIR/squid.conf" ]; then
+  cp "$SQUID_CONFIG_DIR/squid.conf" "$SQUID_CONFIG_DIR/squid.conf.bak"
+fi
+
+# Tạo cấu hình Squid mới - đơn giản và cho phép mọi truy cập
+cat > "$SQUID_CONFIG_DIR/squid.conf" << EOF
+# Cấu hình Squid tối ưu
+http_port $PROXY_PORT
+
+# Quyền truy cập cơ bản
+acl all src all
+http_access allow all
+
+# Cài đặt DNS
+dns_nameservers 8.8.8.8 8.8.4.4
+
+# Tối ưu hiệu suất
+cache_mem 256 MB
+maximum_object_size 10 MB
+
+# Tăng tốc độ kết nối
+connect_timeout 15 seconds
+request_timeout 30 seconds
+
+# Cấu hình ẩn danh
+forwarded_for off
+via off
+
+coredump_dir /var/spool/squid
+EOF
+
+# Tạo thư mục cho PAC file
+mkdir -p /var/www/html
 
 # Lấy địa chỉ IP công cộng
 get_public_ip
 
-# Tạo cấu hình Shadowsocks với DNS Cloudflare
-cat > /etc/shadowsocks/config.json << EOF
-{
-    "server": "0.0.0.0",
-    "server_port": $SS_PORT,
-    "password": "$SS_PASS",
-    "timeout": 300,
-    "method": "$SS_METHOD",
-    "fast_open": true,
-    "nameserver": "1.1.1.1",
-    "mode": "tcp_and_udp"
+# Tạo PAC file
+cat > /var/www/html/proxy.pac << EOF
+function FindProxyForURL(url, host) {
+    // Sử dụng proxy cho mọi kết nối
+    return "PROXY $PUBLIC_IP:$PROXY_PORT";
 }
 EOF
 
-# Tạo service Systemd cho Shadowsocks
-cat > /etc/systemd/system/shadowsocks.service << EOF
-[Unit]
-Description=Shadowsocks Server
-After=network.target
-
-[Service]
-Type=simple
-User=nobody
-ExecStart=/usr/local/bin/ssserver -c /etc/shadowsocks/config.json
-Restart=on-failure
-
-[Install]
-WantedBy=multi-user.target
+# Cấu hình Nginx để phục vụ PAC file
+cat > /etc/nginx/sites-available/default << EOF
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    
+    root /var/www/html;
+    index index.html;
+    
+    server_name _;
+    
+    location / {
+        try_files \$uri \$uri/ =404;
+    }
+    
+    location /proxy.pac {
+        types { }
+        default_type application/x-ns-proxy-autoconfig;
+        add_header Content-Disposition 'inline; filename="proxy.pac"';
+    }
+}
 EOF
 
-# Khắc phục lỗi crypto libsodium cho một số hệ thống
-apt install -y libsodium-dev
-
 # Cấu hình tường lửa
+echo -e "${GREEN}Đang cấu hình tường lửa...${NC}"
 ufw --force reset
 ufw default deny incoming
 ufw default allow outgoing
 ufw allow ssh
-ufw allow $SS_PORT/tcp
-ufw allow $SS_PORT/udp
+ufw allow $HTTP_PORT/tcp
+ufw allow $PROXY_PORT/tcp
 ufw --force enable
 
-# Khởi động lại dịch vụ
-systemctl daemon-reload
-systemctl enable shadowsocks
-systemctl restart shadowsocks
-sleep 2
-
-# Lưu thông tin kết nối vào file để người dùng có thể xem lại sau này
-CONFIG_FILE="/root/shadowsocks_info.txt"
-cat > "$CONFIG_FILE" << EOF
-Server: $PUBLIC_IP
-Cổng: $SS_PORT
-Mật khẩu: $SS_PASS
-Phương thức: $SS_METHOD
-Tên: $SS_NAME
-URI: ss://$(echo -n "$SS_METHOD:$SS_PASS@$PUBLIC_IP:$SS_PORT" | base64 | tr -d '\n')#$SS_NAME
-EOF
-
-# Kiểm tra phương thức mã hóa đúng định dạng
-if [[ ! "$SS_METHOD" =~ ^(aes-256-gcm|aes-128-gcm|chacha20-ietf-poly1305|aes-256-cfb|aes-128-cfb)$ ]]; then
-  echo -e "${YELLOW}Cảnh báo: Phương thức mã hóa '$SS_METHOD' có thể không được hỗ trợ. Đang sử dụng mặc định aes-256-gcm${NC}"
-  SS_METHOD="aes-256-gcm"
+# Xác định tên dịch vụ squid
+if systemctl list-units --type=service | grep -q "squid.service"; then
+  SQUID_SERVICE="squid"
+elif systemctl list-units --type=service | grep -q "squid3.service"; then
+  SQUID_SERVICE="squid3"
+else
+  SQUID_SERVICE="squid"
 fi
 
-# Tạo URI Shadowsocks đảm bảo đúng định dạng
-# Format: ss://BASE64(method:password@server:port)#tag
-BASE64_STR=$(echo -n "$SS_METHOD:$SS_PASS@$PUBLIC_IP:$SS_PORT" | base64 -w 0)
-SS_URI="ss://${BASE64_STR}#${SS_NAME}"
+# Đảm bảo các dịch vụ được bật khi khởi động
+systemctl enable nginx
+systemctl enable $SQUID_SERVICE
 
-# Kiểm tra và hiển thị mẫu URI để xác nhận
-echo -e "${YELLOW}URI Shadowsocks: ${NC}$SS_URI" >> "$CONFIG_FILE"
+# Khởi động lại các dịch vụ
+echo -e "${GREEN}Đang khởi động các dịch vụ...${NC}"
+systemctl restart $SQUID_SERVICE
+sleep 2
+systemctl restart nginx
+sleep 2
 
-# Lưu URI vào file riêng để dễ truy cập
-echo "$SS_URI" > "/root/shadowsocks_uri.txt"
+# Kiểm tra Squid
+if ! systemctl is-active --quiet $SQUID_SERVICE; then
+  echo -e "${RED}Không thể khởi động Squid tự động. Đang thử phương pháp khác...${NC}"
+  squid -f "$SQUID_CONFIG_DIR/squid.conf"
+  sleep 2
+fi
 
-# Hiển thị QR code trước, sau đó hiển thị tên ở dưới giữa với định dạng --------TÊN-------- màu xanh dương
-echo
-qrencode -t ANSIUTF8 -o - "$SS_URI"
-# Tạo dòng trống để cách khoảng
-echo
-# Lấy độ dài của terminal để căn giữa
-TERM_WIDTH=$(tput cols)
-FORMATTED_NAME="--------${SS_NAME}--------"
-NAME_LENGTH=${#FORMATTED_NAME}
-# Tính số khoảng trắng cần thêm vào trước tên để căn giữa
-PADDING=$(( (TERM_WIDTH - NAME_LENGTH) / 2 ))
-# In tên với định dạng in đậm, màu xanh dương và căn giữa
-printf "%${PADDING}s" ""
-echo -e "${BLUE}\033[1m${FORMATTED_NAME}\033[0m"
-echo
-echo -e "\n${YELLOW}Quét mã QR trên với app Shadowsocks để kết nối${NC}"
-echo -e "${YELLOW}Thông tin kết nối đã được lưu vào: $CONFIG_FILE${NC}"
+# Kiểm tra Nginx
+if ! systemctl is-active --quiet nginx; then
+  echo -e "${RED}Không thể khởi động Nginx tự động. Đang thử phương pháp khác...${NC}"
+  nginx
+  sleep 2
+fi
+
+# Kiểm tra lại các cổng
+echo -e "${YELLOW}Đang kiểm tra các cổng...${NC}"
+echo -e "Cổng Squid ($PROXY_PORT): \c"
+if netstat -tuln | grep -q ":$PROXY_PORT "; then
+  echo -e "${GREEN}OK${NC}"
+else
+  echo -e "${RED}KHÔNG HOẠT ĐỘNG${NC}"
+fi
+
+echo -e "Cổng HTTP ($HTTP_PORT): \c"
+if netstat -tuln | grep -q ":$HTTP_PORT "; then
+  echo -e "${GREEN}OK${NC}"
+else
+  echo -e "${RED}KHÔNG HOẠT ĐỘNG${NC}"
+fi
+
+# Thử truy cập vào trang PAC trực tiếp để kiểm tra
+echo -e "${YELLOW}Đang kiểm tra PAC file...${NC}"
+HTTP_RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost/proxy.pac)
+if [ "$HTTP_RESPONSE" = "200" ]; then
+  echo -e "${GREEN}PAC file có thể truy cập được từ localhost${NC}"
+else
+  echo -e "${RED}Không thể truy cập PAC file (HTTP code: $HTTP_RESPONSE)${NC}"
+  echo -e "${YELLOW}Đang thử sửa quyền file...${NC}"
+  chmod 755 /var/www/html -R
+  chown www-data:www-data /var/www/html -R
+  systemctl restart nginx
+  sleep 2
+fi
+
+# Tạo một trang index đơn giản
+echo "<html><body><h1>Proxy PAC Setup</h1><p>Your proxy PAC file is available at: <a href='/proxy.pac'>proxy.pac</a></p></body></html>" > /var/www/html/index.html
+
+# In ra thông tin kết nối
+echo -e "\n${GREEN}============================================${NC}"
+echo -e "${GREEN}CẤU HÌNH PROXY HOÀN TẤT!${NC}"
+echo -e "${GREEN}============================================${NC}"
+echo -e "IP:Port proxy: ${GREEN}$PUBLIC_IP:$PROXY_PORT${NC}"
+echo -e "URL PAC file: ${GREEN}http://$PUBLIC_IP/proxy.pac${NC}"
+echo -e "${GREEN}============================================${NC}"
+
+# Hiển thị nội dung PAC file
+echo -e "\n${YELLOW}Nội dung PAC file:${NC}"
+cat /var/www/html/proxy.pac
