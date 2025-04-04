@@ -135,16 +135,21 @@ systemctl enable shadowsocks
 systemctl restart shadowsocks
 sleep 2
 
+# Lưu thông tin kết nối vào file để người dùng có thể xem lại sau này
+CONFIG_FILE="/root/shadowsocks_info.txt"
+cat > "$CONFIG_FILE" << EOF
+Server: $PUBLIC_IP
+Cổng: $SS_PORT
+Mật khẩu: $SS_PASS
+Phương thức: $SS_METHOD
+Tên: $SS_NAME
+URI: ss://$(echo -n "$SS_METHOD:$SS_PASS@$PUBLIC_IP:$SS_PORT" | base64 | tr -d '\n')#$SS_NAME
+EOF
+
 # Tạo file QR code cho cấu hình SS (cho client di động)
 SS_URI="ss://$(echo -n "$SS_METHOD:$SS_PASS@$PUBLIC_IP:$SS_PORT" | base64 | tr -d '\n')#$SS_NAME"
-qrencode -t ANSIUTF8 -o - "$SS_URI"
 
-# In ra thông tin kết nối
-echo -e "\n${GREEN}=== THÔNG TIN SHADOWSOCKS ===${NC}"
-echo -e "Server: ${GREEN}$PUBLIC_IP${NC}"
-echo -e "Cổng: ${GREEN}$SS_PORT${NC}"
-echo -e "Mật khẩu: ${GREEN}$SS_PASS${NC}"
-echo -e "Phương thức: ${GREEN}$SS_METHOD${NC}"
-echo -e "Tên: ${GREEN}$SS_NAME${NC}"
-echo -e "\nURI cấu hình (dùng cho Shadowsocks clients): ${GREEN}$SS_URI${NC}"
-echo -e "\n${YELLOW}Để sử dụng trên iOS/Android, hãy quét mã QR ở trên với app Shadowsocks${NC}"
+echo -e "\n${GREEN}=== $SS_NAME ===${NC}"
+qrencode -t ANSIUTF8 -o - "$SS_URI"
+echo -e "\n${YELLOW}Quét mã QR trên với app Shadowsocks để kết nối${NC}"
+echo -e "${YELLOW}Thông tin kết nối đã được lưu vào: $CONFIG_FILE${NC}"
