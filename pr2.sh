@@ -146,9 +146,16 @@ Tên: $SS_NAME
 URI: ss://$(echo -n "$SS_METHOD:$SS_PASS@$PUBLIC_IP:$SS_PORT" | base64 | tr -d '\n')#$SS_NAME
 EOF
 
+# Kiểm tra phương thức mã hóa đúng định dạng
+if [[ ! "$SS_METHOD" =~ ^(aes-256-gcm|aes-128-gcm|chacha20-ietf-poly1305|aes-256-cfb|aes-128-cfb)$ ]]; then
+  echo -e "${YELLOW}Cảnh báo: Phương thức mã hóa '$SS_METHOD' có thể không được hỗ trợ. Đang sử dụng mặc định aes-256-gcm${NC}"
+  SS_METHOD="aes-256-gcm"
+fi
+
 # Tạo URI Shadowsocks đảm bảo đúng định dạng
 # Format: ss://BASE64(method:password@server:port)#tag
-SS_URI="ss://$(echo -n "$SS_METHOD:$SS_PASS@$PUBLIC_IP:$SS_PORT" | base64 | tr -d '\n')#$SS_NAME"
+BASE64_STR=$(echo -n "$SS_METHOD:$SS_PASS@$PUBLIC_IP:$SS_PORT" | base64 -w 0)
+SS_URI="ss://${BASE64_STR}#${SS_NAME}"
 
 # Kiểm tra và hiển thị mẫu URI để xác nhận
 echo -e "${YELLOW}URI Shadowsocks: ${NC}$SS_URI" >> "$CONFIG_FILE"
@@ -156,9 +163,19 @@ echo -e "${YELLOW}URI Shadowsocks: ${NC}$SS_URI" >> "$CONFIG_FILE"
 # Lưu URI vào file riêng để dễ truy cập
 echo "$SS_URI" > "/root/shadowsocks_uri.txt"
 
-# Hiển thị QR code trước, sau đó hiển thị tên ở dưới giữa
+# Hiển thị QR code trước, sau đó hiển thị tên ở dưới giữa với font lớn hơn, đậm, màu đỏ
 echo
 qrencode -t ANSIUTF8 -o - "$SS_URI"
-echo -e "${GREEN}$SS_NAME${NC}"
+# Tạo dòng trống để cách khoảng
+echo
+# Lấy độ dài của terminal để căn giữa
+TERM_WIDTH=$(tput cols)
+NAME_LENGTH=${#SS_NAME}
+# Tính số khoảng trắng cần thêm vào trước tên để căn giữa
+PADDING=$(( (TERM_WIDTH - NAME_LENGTH) / 2 ))
+# In tên với định dạng in đậm, màu đỏ và căn giữa
+printf "%${PADDING}s" ""
+echo -e "${RED}\033[1m${SS_NAME}\033[0m"
+echo
 echo -e "\n${YELLOW}Quét mã QR trên với app Shadowsocks để kết nối${NC}"
 echo -e "${YELLOW}Thông tin kết nối đã được lưu vào: $CONFIG_FILE${NC}"
