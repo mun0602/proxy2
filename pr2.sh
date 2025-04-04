@@ -52,9 +52,15 @@ while getopts "p:m:n:" opt; do
   esac
 done
 
-# Nếu không có tên được cung cấp, đặt tên mặc định
+# Nếu không có tên được cung cấp, hỏi người dùng
 if [ -z "$SS_NAME" ]; then
-  SS_NAME="SS-Server"
+  echo -e "${YELLOW}Nhập tên cho QR code Shadowsocks [mặc định: SS-Server]:${NC} "
+  read -r user_name
+  if [ -z "$user_name" ]; then
+    SS_NAME="SS-Server"
+  else
+    SS_NAME="$user_name"
+  fi
 fi
 
 # Lấy cổng ngẫu nhiên cho Shadowsocks
