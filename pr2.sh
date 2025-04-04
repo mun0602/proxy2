@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# Script tự động cài đặt Squid với PAC file
-# Phiên bản sửa lỗi - sử dụng cổng chuẩn và cấu hình tường lửa
+# Script cài đặt GOST với cả HTTP và SOCKS5 proxy không mật khẩu
+# Dễ dàng chuyển đổi giữa HTTP và SOCKS5
 
 # Màu sắc cho output
 GREEN='\033[0;32m'
@@ -15,22 +15,11 @@ if [ "$EUID" -ne 0 ]; then
   exit 1
 fi
 
-# Hàm để tạo cổng ngẫu nhiên và kiểm tra xem nó có đang được sử dụng không
-get_random_port() {
-  # Tạo cổng ngẫu nhiên trong khoảng 10000-65000
-  while true; do
-    RANDOM_PORT=$(shuf -i 10000-65000 -n 1)
-    if ! netstat -tuln | grep -q ":$RANDOM_PORT "; then
-      echo $RANDOM_PORT
-      return 0
-    fi
-  done
-}
-
 # Hàm lấy địa chỉ IP công cộng
 get_public_ip() {
-  # Sử dụng nhiều dịch vụ để đảm bảo lấy được IP
-  PUBLIC_IP=$(curl -s https://api.ipify.org || curl -s https://ifconfig.me || curl -s https://icanhazip.com || curl -s https://ipinfo.io/ip)
+  PUBLIC_IP=$(curl -s https://checkip.amazonaws.com || 
+              curl -s https://api.ipify.org || 
+              curl -s https://ifconfig.me)
 
   if [ -z "$PUBLIC_IP" ]; then
     echo -e "${YELLOW}Không thể xác định địa chỉ IP công cộng. Sử dụng IP local thay thế.${NC}"
@@ -38,65 +27,48 @@ get_public_ip() {
   fi
 }
 
-# Lấy cổng ngẫu nhiên cho Squid
-PROXY_PORT=$(get_random_port)
-echo -e "${GREEN}Đã chọn cổng ngẫu nhiên cho Squid: $PROXY_PORT${NC}"
-
-# Sử dụng cổng 80 cho web server (cổng HTTP tiêu chuẩn)
+# Chọn cổng 
+HTTP_PROXY_PORT=8080
+SOCKS5_PROXY_PORT=1080
 HTTP_PORT=80
-echo -e "${GREEN}Sử dụng cổng HTTP tiêu chuẩn: $HTTP_PORT${NC}"
+echo -e "${GREEN}Sử dụng cổng HTTP proxy: $HTTP_PROXY_PORT${NC}"
+echo -e "${GREEN}Sử dụng cổng SOCKS5 proxy: $SOCKS5_PROXY_PORT${NC}"
+echo -e "${GREEN}Sử dụng cổng web server: $HTTP_PORT${NC}"
 
 # Cài đặt các gói cần thiết
 echo -e "${GREEN}Đang cài đặt các gói cần thiết...${NC}"
 apt update -y
-apt install -y squid nginx curl ufw netcat
+apt install -y nginx curl ufw wget
 
-# Dừng các dịch vụ để cấu hình
+# Dừng các dịch vụ hiện có
 systemctl stop nginx 2>/dev/null
-systemctl stop squid 2>/dev/null
-systemctl stop squid3 2>/dev/null
+pkill gost 2>/dev/null
 
-# Xác định thư mục cấu hình Squid
-if [ -d /etc/squid ]; then
-  SQUID_CONFIG_DIR="/etc/squid"
-else
-  SQUID_CONFIG_DIR="/etc/squid3"
-  # Nếu cả hai đều không tồn tại, kiểm tra lại
-  if [ ! -d "$SQUID_CONFIG_DIR" ]; then
-    SQUID_CONFIG_DIR="/etc/squid"
-  fi
-fi
+# Tải về và cài đặt GOST
+echo -e "${GREEN}Đang tải và cài đặt GOST...${NC}"
+mkdir -p /tmp/gost
+cd /tmp/gost
+wget https://github.com/ginuerzh/gost/releases/download/v2.11.5/gost-linux-amd64-2.11.5.gz
+gunzip gost-linux-amd64-2.11.5.gz
+mv gost-linux-amd64-2.11.5 /usr/local/bin/gost
+chmod +x /usr/local/bin/gost
 
-# Sao lưu cấu hình Squid gốc nếu tồn tại
-if [ -f "$SQUID_CONFIG_DIR/squid.conf" ]; then
-  cp "$SQUID_CONFIG_DIR/squid.conf" "$SQUID_CONFIG_DIR/squid.conf.bak"
-fi
+# Tạo thư mục cấu hình GOST
+mkdir -p /etc/gost
 
-# Tạo cấu hình Squid mới - đơn giản và cho phép mọi truy cập
-cat > "$SQUID_CONFIG_DIR/squid.conf" << EOF
-# Cấu hình Squid tối ưu
-http_port $PROXY_PORT
+# Tạo service file cho GOST - cấu hình cả HTTP và SOCKS5
+cat > /etc/systemd/system/gost.service << EOF
+[Unit]
+Description=GO Simple Tunnel
+After=network.target
 
-# Quyền truy cập cơ bản
-acl all src all
-http_access allow all
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/gost -L http://:$HTTP_PROXY_PORT -L socks5://:$SOCKS5_PROXY_PORT
+Restart=always
 
-# Cài đặt DNS
-dns_nameservers 8.8.8.8 8.8.4.4
-
-# Tối ưu hiệu suất
-cache_mem 256 MB
-maximum_object_size 10 MB
-
-# Tăng tốc độ kết nối
-connect_timeout 15 seconds
-request_timeout 30 seconds
-
-# Cấu hình ẩn danh
-forwarded_for off
-via off
-
-coredump_dir /var/spool/squid
+[Install]
+WantedBy=multi-user.target
 EOF
 
 # Tạo thư mục cho PAC file
@@ -105,12 +77,68 @@ mkdir -p /var/www/html
 # Lấy địa chỉ IP công cộng
 get_public_ip
 
-# Tạo PAC file
+# Tạo PAC file với cả hai tùy chọn HTTP và SOCKS5
 cat > /var/www/html/proxy.pac << EOF
 function FindProxyForURL(url, host) {
-    // Sử dụng proxy cho mọi kết nối
-    return "PROXY $PUBLIC_IP:$PROXY_PORT";
+    // Chọn HTTP proxy làm mặc định, SOCKS5 làm backup
+    return "PROXY $PUBLIC_IP:$HTTP_PROXY_PORT; SOCKS5 $PUBLIC_IP:$SOCKS5_PROXY_PORT; DIRECT";
 }
+EOF
+
+# Tạo PAC file chỉ dùng SOCKS5
+cat > /var/www/html/socks5.pac << EOF
+function FindProxyForURL(url, host) {
+    // Chỉ sử dụng SOCKS5 proxy
+    return "SOCKS5 $PUBLIC_IP:$SOCKS5_PROXY_PORT; DIRECT";
+}
+EOF
+
+# Tạo PAC file chỉ dùng HTTP
+cat > /var/www/html/http.pac << EOF
+function FindProxyForURL(url, host) {
+    // Chỉ sử dụng HTTP proxy
+    return "PROXY $PUBLIC_IP:$HTTP_PROXY_PORT; DIRECT";
+}
+EOF
+
+# Tạo trang index với thông tin và lựa chọn
+cat > /var/www/html/index.html << EOF
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Proxy Options</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .proxy-info { background: #f5f5f5; padding: 15px; margin-bottom: 20px; border-radius: 5px; }
+        .proxy-option { margin-bottom: 10px; }
+        .proxy-option a { text-decoration: none; color: #0066cc; }
+    </style>
+</head>
+<body>
+    <h2>Proxy Settings</h2>
+    
+    <div class="proxy-info">
+        <h3>Available Proxies:</h3>
+        <p><strong>HTTP Proxy:</strong> $PUBLIC_IP:$HTTP_PROXY_PORT</p>
+        <p><strong>SOCKS5 Proxy:</strong> $PUBLIC_IP:$SOCKS5_PROXY_PORT</p>
+    </div>
+    
+    <h3>PAC Files:</h3>
+    <div class="proxy-option">
+        <p><a href="/proxy.pac">Combined PAC</a> - Uses HTTP with SOCKS5 fallback</p>
+    </div>
+    <div class="proxy-option">
+        <p><a href="/http.pac">HTTP PAC</a> - HTTP proxy only</p>
+    </div>
+    <div class="proxy-option">
+        <p><a href="/socks5.pac">SOCKS5 PAC</a> - SOCKS5 proxy only</p>
+    </div>
+    
+    <h3>Manual Configuration:</h3>
+    <p>If you prefer manual setup, use the proxy information above.</p>
+    <p>No username or password required.</p>
+</body>
+</html>
 EOF
 
 # Cấu hình Nginx để phục vụ PAC file
@@ -128,99 +156,120 @@ server {
         try_files \$uri \$uri/ =404;
     }
     
-    location /proxy.pac {
+    location ~ \.pac$ {
         types { }
         default_type application/x-ns-proxy-autoconfig;
-        add_header Content-Disposition 'inline; filename="proxy.pac"';
     }
 }
 EOF
 
 # Cấu hình tường lửa
 echo -e "${GREEN}Đang cấu hình tường lửa...${NC}"
-ufw --force reset
-ufw default deny incoming
-ufw default allow outgoing
+# Sao lưu các quy tắc tường lửa hiện tại
+iptables-save > /tmp/iptables-rules.bak
+
+# Mở các cổng trên ufw
 ufw allow ssh
 ufw allow $HTTP_PORT/tcp
-ufw allow $PROXY_PORT/tcp
-ufw --force enable
+ufw allow $HTTP_PROXY_PORT/tcp
+ufw allow $SOCKS5_PROXY_PORT/tcp
 
-# Xác định tên dịch vụ squid
-if systemctl list-units --type=service | grep -q "squid.service"; then
-  SQUID_SERVICE="squid"
-elif systemctl list-units --type=service | grep -q "squid3.service"; then
-  SQUID_SERVICE="squid3"
-else
-  SQUID_SERVICE="squid"
-fi
+# Nếu ufw bị tắt, mở các cổng bằng iptables trực tiếp
+iptables -I INPUT -p tcp --dport 22 -j ACCEPT
+iptables -I INPUT -p tcp --dport $HTTP_PORT -j ACCEPT
+iptables -I INPUT -p tcp --dport $HTTP_PROXY_PORT -j ACCEPT
+iptables -I INPUT -p tcp --dport $SOCKS5_PROXY_PORT -j ACCEPT
 
-# Đảm bảo các dịch vụ được bật khi khởi động
+# Kích hoạt và khởi động các dịch vụ
+systemctl daemon-reload
+systemctl enable gost
 systemctl enable nginx
-systemctl enable $SQUID_SERVICE
+systemctl start gost
+systemctl start nginx
 
-# Khởi động lại các dịch vụ
-echo -e "${GREEN}Đang khởi động các dịch vụ...${NC}"
-systemctl restart $SQUID_SERVICE
-sleep 2
-systemctl restart nginx
-sleep 2
+# Tạo script kiểm tra
+cat > /usr/local/bin/check-gost.sh << EOF
+#!/bin/bash
+# Script kiểm tra GOST proxy
 
-# Kiểm tra Squid
-if ! systemctl is-active --quiet $SQUID_SERVICE; then
-  echo -e "${RED}Không thể khởi động Squid tự động. Đang thử phương pháp khác...${NC}"
-  squid -f "$SQUID_CONFIG_DIR/squid.conf"
-  sleep 2
+# Kiểm tra GOST
+if pgrep gost > /dev/null; then
+  echo "GOST đang chạy"
+else
+  echo "GOST không chạy - khởi động lại"
+  systemctl restart gost
 fi
 
 # Kiểm tra Nginx
-if ! systemctl is-active --quiet nginx; then
-  echo -e "${RED}Không thể khởi động Nginx tự động. Đang thử phương pháp khác...${NC}"
-  nginx
-  sleep 2
-fi
-
-# Kiểm tra lại các cổng
-echo -e "${YELLOW}Đang kiểm tra các cổng...${NC}"
-echo -e "Cổng Squid ($PROXY_PORT): \c"
-if netstat -tuln | grep -q ":$PROXY_PORT "; then
-  echo -e "${GREEN}OK${NC}"
+if systemctl is-active --quiet nginx; then
+  echo "Nginx đang chạy"
 else
-  echo -e "${RED}KHÔNG HOẠT ĐỘNG${NC}"
-fi
-
-echo -e "Cổng HTTP ($HTTP_PORT): \c"
-if netstat -tuln | grep -q ":$HTTP_PORT "; then
-  echo -e "${GREEN}OK${NC}"
-else
-  echo -e "${RED}KHÔNG HOẠT ĐỘNG${NC}"
-fi
-
-# Thử truy cập vào trang PAC trực tiếp để kiểm tra
-echo -e "${YELLOW}Đang kiểm tra PAC file...${NC}"
-HTTP_RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost/proxy.pac)
-if [ "$HTTP_RESPONSE" = "200" ]; then
-  echo -e "${GREEN}PAC file có thể truy cập được từ localhost${NC}"
-else
-  echo -e "${RED}Không thể truy cập PAC file (HTTP code: $HTTP_RESPONSE)${NC}"
-  echo -e "${YELLOW}Đang thử sửa quyền file...${NC}"
-  chmod 755 /var/www/html -R
-  chown www-data:www-data /var/www/html -R
+  echo "Nginx không chạy - khởi động lại"
   systemctl restart nginx
-  sleep 2
 fi
 
-# Tạo một trang index đơn giản
-echo "<html><body><h1>Proxy PAC Setup</h1><p>Your proxy PAC file is available at: <a href='/proxy.pac'>proxy.pac</a></p></body></html>" > /var/www/html/index.html
+# Kiểm tra kết nối HTTP proxy
+echo "Kiểm tra kết nối HTTP proxy..."
+curl -x http://localhost:$HTTP_PROXY_PORT -s https://httpbin.org/ip
 
-# In ra thông tin kết nối
+# Kiểm tra kết nối SOCKS5 proxy (nếu curl hỗ trợ)
+echo "Kiểm tra kết nối SOCKS5 proxy..."
+curl --socks5 localhost:$SOCKS5_PROXY_PORT -s https://httpbin.org/ip
+EOF
+chmod +x /usr/local/bin/check-gost.sh
+
+# Kiểm tra GOST
+echo -e "${YELLOW}Đang kiểm tra GOST...${NC}"
+sleep 2
+if pgrep gost > /dev/null; then
+  echo -e "${GREEN}GOST đang chạy!${NC}"
+else
+  echo -e "${RED}GOST không chạy. Khởi động thủ công...${NC}"
+  /usr/local/bin/gost -L http://:$HTTP_PROXY_PORT -L socks5://:$SOCKS5_PROXY_PORT &
+fi
+
+# Kiểm tra Nginx
+echo -e "${YELLOW}Đang kiểm tra Nginx...${NC}"
+if systemctl is-active --quiet nginx; then
+  echo -e "${GREEN}Nginx đang chạy!${NC}"
+else
+  echo -e "${RED}Nginx không khởi động được. Kiểm tra log: journalctl -u nginx${NC}"
+  nginx
+fi
+
+# Hiển thị thông tin cấu hình
 echo -e "\n${GREEN}============================================${NC}"
-echo -e "${GREEN}CẤU HÌNH PROXY HOÀN TẤT!${NC}"
+echo -e "${GREEN}HTTP & SOCKS5 PROXY ĐÃ CÀI ĐẶT XONG!${NC}"
 echo -e "${GREEN}============================================${NC}"
-echo -e "IP:Port proxy: ${GREEN}$PUBLIC_IP:$PROXY_PORT${NC}"
-echo -e "URL PAC file: ${GREEN}http://$PUBLIC_IP/proxy.pac${NC}"
+echo -e "HTTP Proxy: ${GREEN}$PUBLIC_IP:$HTTP_PROXY_PORT${NC}"
+echo -e "SOCKS5 Proxy: ${GREEN}$PUBLIC_IP:$SOCKS5_PROXY_PORT${NC}"
+echo -e "PAC Files:"
+echo -e "  Kết hợp: ${GREEN}http://$PUBLIC_IP/proxy.pac${NC}"
+echo -e "  HTTP: ${GREEN}http://$PUBLIC_IP/http.pac${NC}"
+echo -e "  SOCKS5: ${GREEN}http://$PUBLIC_IP/socks5.pac${NC}"
 echo -e "${GREEN}============================================${NC}"
 
-# Hiển thị nội dung PAC file
-echo -e "\n${YELLOW}Nội dung PAC file:${NC}"
-cat /var/www/html/proxy.pac
+# Kiểm tra kết nối proxy ngay lập tức
+echo -e "\n${YELLOW}Kiểm tra kết nối HTTP proxy...${NC}"
+HTTP_TEST=$(curl -x http://localhost:$HTTP_PROXY_PORT -s https://httpbin.org/ip)
+echo -e "Kết quả HTTP: ${GREEN}$HTTP_TEST${NC}"
+
+echo -e "\n${YELLOW}Kiểm tra kết nối SOCKS5 proxy...${NC}"
+SOCKS_TEST=$(curl --socks5 localhost:$SOCKS5_PROXY_PORT -s https://httpbin.org/ip 2>/dev/null)
+if [ -n "$SOCKS_TEST" ]; then
+  echo -e "Kết quả SOCKS5: ${GREEN}$SOCKS_TEST${NC}"
+else
+  echo -e "${YELLOW}Không thể kiểm tra SOCKS5 (curl có thể không hỗ trợ). Nhưng proxy vẫn có thể hoạt động.${NC}"
+fi
+
+# Hướng dẫn cách sử dụng
+echo -e "\n${YELLOW}Hướng dẫn sử dụng:${NC}"
+echo -e "1. ${GREEN}Sử dụng PAC tự động:${NC}"
+echo -e "   - PAC kết hợp: ${GREEN}http://$PUBLIC_IP/proxy.pac${NC}"
+echo -e "   - Chỉ HTTP: ${GREEN}http://$PUBLIC_IP/http.pac${NC}"
+echo -e "   - Chỉ SOCKS5: ${GREEN}http://$PUBLIC_IP/socks5.pac${NC}"
+echo -e "2. ${GREEN}Cấu hình thủ công:${NC}"
+echo -e "   - HTTP Proxy: ${GREEN}$PUBLIC_IP:$HTTP_PROXY_PORT${NC}"
+echo -e "   - SOCKS5 Proxy: ${GREEN}$PUBLIC_IP:$SOCKS5_PROXY_PORT${NC}"
+echo -e "3. ${GREEN}Kiểm tra proxy:${NC}"
+echo -e "   sudo /usr/local/bin/check-gost.sh"
