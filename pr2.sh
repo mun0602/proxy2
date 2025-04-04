@@ -1,13 +1,12 @@
 #!/bin/bash
 
-# Script tự động cài đặt Shadowsocks với tên tùy chọn và DNS Cloudflare
-# Tạo QR code với tên do người dùng nhập
+# Script tự động cài đặt Shadowsocks với tên tùy chỉnh
+# Phiên bản tối giản - không tạo PAC file
 
 # Màu sắc cho output
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
-BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Kiểm tra quyền root
@@ -43,44 +42,6 @@ generate_password() {
   fi
 }
 
-# Cấu hình DNS Cloudflare cho hệ thống
-configure_cloudflare_dns() {
-  echo -e "${BLUE}Cấu hình DNS Cloudflare cho hệ thống...${NC}"
-  
-  # Xác định loại hệ thống
-  if [ -f /etc/systemd/resolved.conf ]; then
-    # SystemD Resolved
-    echo -e "${BLUE}Cấu hình DNS qua systemd-resolved...${NC}"
-    cp /etc/systemd/resolved.conf /etc/systemd/resolved.conf.bak
-    cat > /etc/systemd/resolved.conf << EOF
-[Resolve]
-DNS=1.1.1.1 1.0.0.1
-DNSStubListener=yes
-EOF
-    systemctl restart systemd-resolved
-  fi
-  
-  # Cập nhật /etc/resolv.conf
-  if [ -f /etc/resolv.conf ]; then
-    cp /etc/resolv.conf /etc/resolv.conf.bak
-    cat > /etc/resolv.conf << EOF
-# Cloudflare DNS
-nameserver 1.1.1.1
-nameserver 1.0.0.1
-EOF
-  fi
-  
-  # Cấu hình resolvconf nếu được cài đặt
-  if command -v resolvconf >/dev/null 2>&1; then
-    echo -e "${BLUE}Cấu hình Cloudflare DNS qua resolvconf...${NC}"
-    echo "nameserver 1.1.1.1" > /etc/resolvconf/resolv.conf.d/head
-    echo "nameserver 1.0.0.1" >> /etc/resolvconf/resolv.conf.d/head
-    resolvconf -u
-  fi
-  
-  echo -e "${GREEN}Đã cấu hình DNS Cloudflare thành công!${NC}"
-}
-
 # Phân tích tham số dòng lệnh
 while getopts "p:m:n:" opt; do
   case $opt in
@@ -102,7 +63,6 @@ fi
 
 # Lấy cổng ngẫu nhiên cho Shadowsocks
 SS_PORT=$(get_random_port)
-echo -e "${GREEN}Đã chọn cổng ngẫu nhiên cho Shadowsocks: $SS_PORT${NC}"
 
 # Phương thức mã hóa mặc định
 if [ -z "$SS_METHOD" ]; then
@@ -113,21 +73,16 @@ fi
 generate_password
 
 # Cài đặt các gói cần thiết
-echo -e "${BLUE}Đang cài đặt các gói cần thiết...${NC}"
 apt update -y
-apt install -y python3-pip curl ufw qrencode libsodium-dev netcat
+apt install -y python3-pip curl ufw
 
 # Cài đặt Shadowsocks
-echo -e "${BLUE}Đang cài đặt Shadowsocks...${NC}"
 pip3 install https://github.com/shadowsocks/shadowsocks/archive/master.zip
-
-# Cấu hình DNS Cloudflare cho hệ thống
-configure_cloudflare_dns
 
 # Tạo thư mục cấu hình Shadowsocks
 mkdir -p /etc/shadowsocks
 
-# Tạo cấu hình Shadowsocks với DNS Cloudflare
+# Tạo cấu hình Shadowsocks
 cat > /etc/shadowsocks/config.json << EOF
 {
     "server": "0.0.0.0",
@@ -136,8 +91,7 @@ cat > /etc/shadowsocks/config.json << EOF
     "timeout": 300,
     "method": "$SS_METHOD",
     "fast_open": true,
-    "nameserver": "1.1.1.1,1.0.0.1",
-    "dns_ipv6": false,
+    "nameserver": "1.1.1.1",
     "mode": "tcp_and_udp"
 }
 EOF
@@ -158,23 +112,10 @@ Restart=on-failure
 WantedBy=multi-user.target
 EOF
 
-# Tối ưu hóa sysctl cho hiệu suất proxy
-cat > /etc/sysctl.d/local.conf << EOF
-# Tối ưu hóa cho Shadowsocks
-net.core.somaxconn = 32768
-net.ipv4.tcp_fastopen = 3
-net.ipv4.tcp_max_syn_backlog = 32768
-net.ipv4.tcp_max_tw_buckets = 6000000
-net.ipv4.tcp_mtu_probing = 1
-net.ipv4.tcp_tw_reuse = 1
-net.ipv4.tcp_fin_timeout = 30
-EOF
-
-# Áp dụng tối ưu hóa
-sysctl --system
+# Khắc phục lỗi crypto libsodium cho một số hệ thống
+apt install -y libsodium-dev
 
 # Cấu hình tường lửa
-echo -e "${BLUE}Đang cấu hình tường lửa...${NC}"
 ufw --force reset
 ufw default deny incoming
 ufw default allow outgoing
@@ -184,31 +125,16 @@ ufw allow $SS_PORT/udp
 ufw --force enable
 
 # Khởi động dịch vụ Shadowsocks
-echo -e "${BLUE}Đang khởi động Shadowsocks...${NC}"
 systemctl daemon-reload
 systemctl enable shadowsocks
 systemctl restart shadowsocks
 sleep 2
 
-# Kiểm tra trạng thái Shadowsocks
-if ! systemctl is-active --quiet shadowsocks; then
-  echo -e "${YELLOW}Dịch vụ Shadowsocks không khởi động được. Đang thử phương pháp khác...${NC}"
-  # Thử phương pháp chạy trực tiếp
-  ssserver -c /etc/shadowsocks/config.json -d start
-  sleep 2
-fi
-
-# Kiểm tra xem cổng có mở không
-if ! netstat -tuln | grep -q ":$SS_PORT "; then
-  echo -e "${RED}Không thể mở cổng $SS_PORT. Kiểm tra lại cấu hình.${NC}"
-  systemctl status shadowsocks
-  exit 1
-fi
-
 # Lấy địa chỉ IP công cộng
 get_public_ip
 
 # Tạo file QR code cho cấu hình SS (cho client di động) với tên tùy chỉnh
+apt install -y qrencode
 SS_URI="ss://$(echo -n "$SS_METHOD:$SS_PASS@$PUBLIC_IP:$SS_PORT" | base64 | tr -d '\n')#$SS_NAME"
 
 # Tạo QR code trong thư mục hiện tại
@@ -227,7 +153,6 @@ echo -e "Cổng: ${GREEN}$SS_PORT${NC}"
 echo -e "Mật khẩu: ${GREEN}$SS_PASS${NC}"
 echo -e "Phương thức: ${GREEN}$SS_METHOD${NC}"
 echo -e "Tên: ${GREEN}$SS_NAME${NC}"
-echo -e "DNS: ${GREEN}Cloudflare (1.1.1.1, 1.0.0.1)${NC}"
 echo -e "\nURI cấu hình: ${GREEN}$SS_URI${NC}"
 echo -e "\nQR code đã được lưu thành file: ${GREEN}$SS_NAME.png${NC}"
 echo -e "\n${YELLOW}Để sử dụng trên iOS/Android, hãy quét mã QR ở trên với app Shadowsocks${NC}"
